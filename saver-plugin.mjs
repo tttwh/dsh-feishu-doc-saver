@@ -64,8 +64,8 @@ export default {
     async function apiJson(method, path, token, body) {
       let lastErr = ''
       for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-        const argv = [CURL, '-s', '-S', '-X', method, BASE + path,
-          '-H', 'Authorization: Bearer ' + token]
+        const argv = [CURL, '-s', '-S', '-X', method, BASE + path]
+        if (token) argv.push('-H', 'Authorization: Bearer ' + token)
         let stdinData
         if (body !== undefined) {
           argv.push('-H', 'Content-Type: application/json', '--data-binary', '@-')
@@ -91,30 +91,54 @@ export default {
     // ---------- 令牌管理 ----------
     async function readTokenFile() {
       if (fs === undefined) return null
+      let best = null
+      let bestStamp = -1
       for (const p of TOKEN_PATHS) {
         try {
           const target = await fs.resolve(p)
           const text = await fs.readText(target)
-          return JSON.parse(text)
+          const rec = JSON.parse(text)
+          const stamp = rec.refreshed_at || rec.created_at || 0
+          if (stamp > bestStamp) { best = rec; bestStamp = stamp }
         } catch (e) { /* 尝试下一个路径 */ }
       }
-      return null
+      return best
+    }
+
+    async function persistTokens(record) {
+      if (fs === undefined) return
+      const payload = JSON.stringify(record, null, 2)
+      for (const p of TOKEN_PATHS) {
+        try {
+          const target = await fs.resolve(p)
+          await fs.writeText(target, payload, undefined, undefined, {
+            mode: p.startsWith('/') ? 'danger-full-access' : 'workspace-write',
+            workspaceRoot: '/Users/taoweihao/Downloads/FYP',
+          })
+        } catch (e) { /* 尽力而为 */ }
+      }
     }
 
     async function refreshTokens(record) {
-      const r = await apiJson('POST', '/authen/v1/oidc/refresh_token', '', {
+      const app = await apiJson('POST', '/auth/v3/app_access_token/internal', null, {
+        app_id: record.app_id,
+        app_secret: record.app_secret,
+      })
+      if (app.code !== 0 || !app.app_access_token) {
+        throw new Error('获取飞书应用令牌失败: ' + (app.msg || app.message))
+      }
+      const r = await apiJson('POST', '/authen/v1/oidc/refresh_access_token', app.app_access_token, {
         grant_type: 'refresh_token',
-        client_id: record.app_id,
-        client_secret: record.app_secret,
         refresh_token: record.refresh_token,
       })
-      if (r.code !== 0) throw new Error('刷新飞书令牌失败: ' + r.msg + ' (请重新运行授权流程)')
+      if (r.code !== 0) throw new Error('刷新飞书令牌失败: ' + (r.msg || r.message) + ' (需要重新授权：node feishu-oauth.mjs <app_id> <app_secret>)')
       const d = r.data
       const now = Date.now()
       return {
         access_token: d.access_token,
-        refresh_token: d.refresh_token,
+        refresh_token: d.refresh_token || record.refresh_token,
         expires_at: now + (d.expires_in || 7200) * 1000,
+        refreshed_at: now,
       }
     }
 
@@ -127,7 +151,9 @@ export default {
         return { token: record.access_token, record }
       }
       const fresh = await refreshTokens(record)
-      return { token: fresh.access_token, record: Object.assign({}, record, fresh) }
+      const next = Object.assign({}, record, fresh)
+      await persistTokens(next)
+      return { token: fresh.access_token, record: next }
     }
 
     // ---------- 目标文件夹 ----------
