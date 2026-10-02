@@ -1,0 +1,2 @@
+name: 飞书文档保存
+description: 标准模式的全部能力 + save_to_feishu 工具：把 DSH 写好的文档（Markdown/HTML/纯文本）保存为飞书云文档，表格、代码块、图片、LaTeX 公式、嵌套列表、引用全保真，存入用户「我的空间」的 DSH 文件夹，文档归用户本人所有。
